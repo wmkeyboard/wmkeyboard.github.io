@@ -1,0 +1,105 @@
+name: Mirror
+
+# Builds the docs site from the public wasi-master/wmkeyboard repository and
+# publishes it here, as a mirror of https://wmkeyboard.pages.dev for networks
+# that block *.pages.dev.
+#
+# The build is the same one Cloudflare runs. SITE_URL stays pages.dev, so the
+# canonical links, og: URLs and sitemap on this mirror point back at the
+# primary host and search engines index one copy, not two.
+#
+# Nothing pushes to this repository. A scheduled run checks whether the source
+# trees the site is built from (docs/ and the app assets it imports) changed
+# since the deployed build, recorded in /mirror.json, and rebuilds only then.
+# The 03:17 run always rebuilds, to pick up the addon seed repositories the
+# addon pages fetch at build time.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild even if the source is unchanged'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  SOURCE: wasi-master/wmkeyboard
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.diff.outputs.build }}
+      stamp: ${{ steps.diff.outputs.stamp }}
+    steps:
+      - id: diff
+        env:
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || github.event.schedule == '17 3 * * *' }}
+        run: |
+          git clone -q --filter=blob:none --depth 1 --no-checkout "https://github.com/$SOURCE.git" src
+          cd src
+          stamp="$(git rev-parse HEAD:docs) $(git rev-parse HEAD:app/src/main/assets)"
+          deployed=$(curl -fsS https://wmkeyboard.github.io/mirror.json 2>/dev/null | jq -r '.stamp // empty' || true)
+          echo "source:   $stamp"
+          echo "deployed: $deployed"
+          echo "stamp=$stamp" >> "$GITHUB_OUTPUT"
+          if [ "$FORCE" = "true" ] || [ "$stamp" != "$deployed" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Full history: the sitemap's <lastmod> is each page's git date.
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE }}
+          fetch-depth: 0
+          filter: blob:none
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Build
+        working-directory: docs
+        env:
+          STAMP: ${{ needs.check.outputs.stamp }}
+        run: |
+          npm ci
+          npm run build
+          # Cloudflare-only; GitHub Pages ignores it.
+          rm -f dist/_headers
+          jq -n --arg stamp "$STAMP" --arg commit "$(git rev-parse HEAD)" \
+            --arg built "$(date -u +%FT%TZ)" '{stamp: $stamp, commit: $commit, built: $built}' > dist/mirror.json
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
