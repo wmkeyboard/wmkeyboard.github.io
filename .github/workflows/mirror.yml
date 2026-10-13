@@ -25,6 +25,7 @@ on:
         default: false
 
 permissions:
+  actions: write
   contents: read
   pages: write
   id-token: write
@@ -44,6 +45,15 @@ jobs:
       build: ${{ steps.diff.outputs.build }}
       stamp: ${{ steps.diff.outputs.stamp }}
     steps:
+      # GitHub disables a scheduled workflow after 60 days without a commit to
+      # the repository, and deploys are not commits. Re-enabling it resets
+      # that clock.
+      - name: Keep the schedule alive
+        if: github.event.schedule == '17 3 * * *'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/$GITHUB_REPOSITORY/actions/workflows/mirror.yml/enable"
+
       - id: diff
         env:
           FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || github.event.schedule == '17 3 * * *' }}
