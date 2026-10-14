@@ -97,6 +97,10 @@ jobs:
           npm run build
           # Cloudflare-only; GitHub Pages ignores it.
           rm -f dist/_headers
+          # Search Console ownership of this host. Mirror-only, so it lives here
+          # and not in the source; Google reads it from the home page.
+          sed -i 's|<head>|<head><meta name="google-site-verification" content="GgdbCyS9Mh5u8-kotL0oVkY3nDYeJ3rAjUuEad-SRE0">|' dist/index.html
+          grep -q google-site-verification dist/index.html
           jq -n --arg stamp "$STAMP" --arg commit "$(git rev-parse HEAD)" \
             --arg built "$(date -u +%FT%TZ)" '{stamp: $stamp, commit: $commit, built: $built}' > dist/mirror.json
 
